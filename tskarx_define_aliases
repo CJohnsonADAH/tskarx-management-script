@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# tskarx-define-aliases: some basic subroutines used across many of the tskarx suite of scripts
+# 
+# @version 2021.0213
+
+CONFFILE="${SCRIPTDIR}/${SCRIPT}.defaults.conf"
+
+declare -a _ARGV=("$0")
+declare -A _PARAM=()
+declare -A _SWITCH=()
+
+function tskarx_command_line() {
+	shopt -s lastpipe
+
+	cat "$@" 2>/dev/null | while IFS="" read -r ARG ; do
+		
+		if [[ "${ARG}" =~ ^--([A-Za-z_0-9][^=]*)(=\s*(.*)\s*)?$ ]] ; then
+			KEY="${BASH_REMATCH[1]}"
+			VALUE="${BASH_REMATCH[3]}"
+			if [[ -z "${BASH_REMATCH[2]}" ]] ; then
+				VALUE="${KEY}"
+			fi
+			_PARAM["${KEY}"]="${VALUE}"
+			_SWITCH["${KEY}"]="${ARG}"
+
+		elif [[ ! -z "${ARG}" ]] ; then
+			_ARGV+=("${ARG}")
+			
+		fi
+		
+	done
+	
+}
+
+function tskarx_help_notes () {
+	local scriptpath="${1}" ; shift
+	local method="${1}" ; shift
+	local context="${1}" ; shift
+
+	local package=$(basename "${scriptpath}")
+	local directive="[@]package ${package}"
+	local HELPNOTES=""
+	
+	if [[ ! -z "${method}" ]] ; then
+		directive="[@]method ${package} ${method}"
+	fi
+	
+	HELPNOTES=$( sed --quiet "/^[#] ${directive}/,/^[#] @version/p" ${scriptpath} )
+	
+	if [ -z "${HELPNOTES}" ] ; then
+		echo "[${package} ${context}] '${method}' help notes not yet implemented." 1>&2
+		EXITCODE=255
+	else 
+		echo "${HELPNOTES}" | grep "^[#]" | grep -v "^[#] [@]" | sed "s/^[#] *//"
+		EXITCODE=0
+	fi
+	
+	return "${EXITCODE}"
+}
+

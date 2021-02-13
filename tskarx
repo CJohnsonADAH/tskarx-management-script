@@ -1,0 +1,355 @@
+#!/bin/bash
+#
+# tskarx: Master script for scripted Tuskegee Archives Repository data management and preservation
+#
+# @version 2021.0213
+
+SCRIPTPATH="$( which "$0" )"
+SCRIPTPATH="$( readlink --canonicalize "${SCRIPTPATH}" )"
+SCRIPTDIR="$( dirname "${SCRIPTPATH}" )"
+SCRIPT="$( basename "${SCRIPTPATH}" )"
+
+PATH="${SCRIPTDIR}:${PATH}"
+
+source "${SCRIPTDIR}/tskarx_define_aliases"
+
+__USAGE__="Usage: ${SCRIPT} [--version] [--help] <CMD> [<ARGS>]"
+__HELP__="[${SCRIPT}] Try '${SCRIPT} help' for more information."
+__DOC__="""${__USAGE__}
+
+  --version 	Display the version of the script
+  --help    	Display these usage notes
+
+The most commonly used ${SCRIPT} commands are:
+  bag			Package part of a repository for preservation
+  help      	Display usage notes for the ${SCRIPT} script or for a given command
+  
+Exit codes:
+0 = success (successful retrieval and expected result)
+1-254 = error in executing command
+255 = command not supported
+"""
+
+##########################################################################################
+### COMMAND LINE: loop through switches ##################################################
+##########################################################################################
+
+declare -a _CMDLINE ; _CMDLINE=("$0")
+
+shopt -s lastpipe
+
+declare -a SWITCHFILES ; SWITCHFILES=()
+if [[ -r "${CONFFILE}" ]] ; then
+	SWITCHFILES+=(${CONFFILE})
+fi
+
+CMDLINETXT=$(mktemp)
+
+printf "%s\n" "--repository=repository" >> "${CMDLINETXT}"
+
+until [[ "$#" -lt 1 ]] ; do
+	_CMDLINE+=("$1")
+	printf "%s\n" "$1" >> "${CMDLINETXT}"
+	shift
+done
+
+SWITCHFILES+=(${CMDLINETXT})
+
+tskarx_command_line "${SWITCHFILES[@]}"
+
+rm "${CMDLINETXT}"
+
+##########################################################################################
+### SCRIPT: DETERMINE COMMAND, THEN EXECUTE PIPELINE  ####################################
+##########################################################################################
+
+EXITCODE=0
+CMD="${_ARGV[1]}"
+
+
+if [[ ! -z "${_PARAM[version]}" ]] ; then
+	if [[ -z "${CMD}" ]] ; then
+		CMD="version"
+	else
+		"${SCRIPTPATH}" version
+	fi
+fi
+
+if [[ ! -z "${_PARAM[help]}" ]] ; then
+	CMD="help"
+	_ARGV=( "help" "${_ARGV[@]}" )
+fi
+
+case "${CMD}" in
+	"")
+		echo "[${SCRIPT}] command expected (for example: '${SCRIPT} bag', '${SCRIPT} preserve', etc.)" 1>&2
+		echo "${__HELP__}" 1>&2
+		EXITCODE=255
+		;;
+	
+	"version")
+# @method tskarx version
+# Displays current version of the tskarx script.
+#
+# Usage: tskarx version
+#
+# @version 2019.0808
+		VERSION=$(grep "^# @version" $0 | head --lines=1 | cut --only-delimited --fields=3- --delimiter=" ")
+		echo "${SCRIPT} version ${VERSION}"
+		EXITCODE=0
+		;;
+		
+	"help")
+# @method tskarx help
+# Displays usage notes for the tskarx script or a given tskarx script command
+#
+# Usage: tskarx help [<CMD>]
+#
+# CMD is an tskarx script pipeline command, e.g. "bag", "zip", "preserve"
+# If omitted, display usage notes for the tskarx script as a whole.
+#
+# @version 2019.0715
+		HELPCMD="${_ARGV[2]}"
+		if [[ -z "${HELPCMD}" ]] ; then
+			echo "${__DOC__}"
+			EXITCODE=0
+		else 
+			tskarx_help_notes "${SCRIPTPATH}" "${HELPCMD}" "${CMD}"
+			EXITCODE=$?
+		fi
+		;;
+		
+	"echo")
+# @method tskarx echo
+# Echoes back command-line parameters and default settings for the tskarx script
+#
+# Usage: tskarx echo [<ARG>]...
+#
+# ARG are one or more object words, command-line switches, etc. to parse and
+# echo back to the console.
+#
+# @version 2021.0213
+		declare -p _CMDLINE
+		declare -p _ARGV
+		declare -p _PARAM
+		declare -p _SWITCH
+		;;
+
+	"export")
+# @method tskarx export
+# Prepare a resource like the WordPress database for export, packaging and later digital preservation
+# probably using `tskarx package` and `tskarx preserve`.
+#
+# Usage: tskarx export database|... [--repository=<REPO>]
+#
+# @version 2021.0213
+			OBJECT="${_ARGV[2]}"
+			
+			declare -a REMAINDER=( "${_ARGV[@]:2}" "${_SWITCH[@]}" )
+			
+			EXPORT_OPTIONS="database|test"
+			case "${OBJECT}" in
+				"")
+					echo "[${SCRIPT}:${CMD}] Usage: ${SCRIPT} export ${EXPORT_OPTIONS}" 1>&2
+					;;
+					
+				"database")
+					"${SCRIPT}" database-export "${REMAINDER[@]}"
+					;;
+					
+				"test")
+					echo "[${SCRIPT}:${CMD}] Export command: ${REMAINDER[@]}"
+					;;
+					
+				*)
+					echo "[${SCRIPT}:${CMD}] I don't know how to export '${OBJECT}'. Options: ${EXPORT_OPTIONS}" 1>&2
+					;;
+			esac
+			
+			;;
+			
+	"database-export")
+# @method tskarx database-export
+# Prepare a portion of a WordPress database for export, packaging and later digital preservation
+# probably using `tskarx package` and `tskarx preserve`.
+#
+# Usage: tskarx database-export [--repository=<REPO>] [--replace] [--to=]<DIR>
+#
+#   --to         	The directory to place the SQL tables export in.
+#   --replace    	Delete and replace any earlier SQL tables exports in the destination directory.
+#	--repository 	Specifies which WordPress digital repository we are exporting: repository, legacies, gchr...
+#
+# @version 2021.0213
+
+		declare -A DATABASE=()
+		DATABASE[repository]=TuskegeeArchivesRepository
+		DATABASE[legacies]=NEH
+		DATABASE[gchr]=gchr
+		
+		OBJECT=$( printf "%s" "${_PARAM[repository]}" | tr --complement --squeeze-repeats "[:alnum:]" "-" )
+		DB="${DATABASE[${OBJECT}]}"
+		TS=$( date +"%Y%m%d%H%M%S" )
+
+		DESTINATION=$( [[ -n "${_PARAM[to]}" ]] && printf "%s" "${_PARAM[to]}" || printf "%s" "${_ARGV[2]}" ) 
+		DESTINATION=$( [[ -n "${DESTINATION}" ]] && printf "%s" "${DESTINATION}" || printf "%s/%s" "${HOME}" "${OBJECT}-db" )
+
+		EXPORT_DESTINATION="${DESTINATION}/${DB}-${TS}.sql"
+
+		declare -a EXPORTS=()
+		if [[ ! -d "${DESTINATION}" ]] ; then
+			mkdir --verbose --parents "${DESTINATION}"
+		else
+			EXPORTS=( $( ls -1 "${DESTINATION}/${DB}-"*".sql" ) )
+		fi
+		
+		mysql --database="${DB}" <<<"""
+SET sql_mode='';
+CREATE TABLE IF NOT EXISTS wp_users_sanitized LIKE wp_users;
+DELETE FROM wp_users_sanitized;
+INSERT INTO wp_users_sanitized SELECT * FROM wp_users;
+UPDATE wp_users_sanitized SET user_pass='---',user_activation_key='---'
+		"""
+		mysqldump "${DB}" --ignore-table="${DB}.wp_users" --no-tablespaces --comments --dump-date --force > "${EXPORT_DESTINATION}"
+		EXITCODE=$?
+		
+		if [[ "${EXITCODE}" -gt 0 ]] ; then
+			echo "[${SCRIPT} ${CMD}] Export process errors. Halting." 1>&2
+		else
+			if [[ ! -z "${_PARAM[replace]}" ]] ; then
+				printf "created new database export %s (database: %s)\n" "$( basename "${EXPORT_DESTINATION}" )" "${DB}"
+				for FILE in "${EXPORTS[@]}" ; do
+					printf '  ';
+					rm -v "${FILE}"
+				done
+			fi
+			
+		fi
+		
+		;;
+
+	"bag")
+# @method tskarx bag
+# Enclose a file or directory of files (for example a preservation package) in a BagIt-formatted
+# layout for preservation storage and deposit into distributed digital preservation (probably
+# using `tskarx preserve`).
+#
+# Usage: tskarx bag [<DIR>]...
+#
+# @version 2021.0213
+
+		# Locate a copy of bagit.py that is anywhere in ${PATH} OR in any subdirectory of ${PATH}
+		BAGIT_PY=$( find $( printf "${PATH}" | tr ":" "\n" ) -name 'bagit.py' )
+		
+		for FILE in "${_ARGV[@]:2}" ; do
+			python3 "${BAGIT_PY}" "${FILE}"
+			SUBCODE=$?
+			
+			if [[ "${SUBCODE}" -gt "${EXITCODE}" ]] ; then
+				EXITCODE="${SUBCODE}"
+			fi
+		done
+		
+		if [[ "${EXITCODE}" -gt 0 ]] ; then
+			printf "[${SCRIPT} ${CMD}] Error code encountered during bagging: %d\n" "${EXITCODE}"
+		fi
+		;;
+		
+	"package")
+# @method tskarx package
+# Package up a portion of a WordPress-managed data store for later digital preservation
+# probably using `tskarx preserve`.
+#
+# Usage: tskarx package [--repository=<REPO>] <DATE>
+#
+# @version 2021.0213
+
+		declare -A DATASTORE
+		DATASTORE[repository]="/var/www/html/repository/wp-content/uploads"
+		DESTINATION[repository]="/mnt/magneto/preserve/repository"
+		
+		OBJECT=$( printf "${_PARAM[repository]}" | tr --complement --squeeze-repeats "[:alnum:]" "-" )
+		
+		DATA="${DATASTORE[$OBJECT]}"
+		if [[ -e "${DATA}" ]] ; then
+			DATA="$( readlink --canonicalize "${DATA}" )"
+
+			DATE="${_ARGV[2]}"
+			DATE_SLUG="$( printf "%s" "${DATE}" | tr --complement --squeeze-repeats "[:alnum:]" "-" )"
+			SLUG="$( printf "%s-%s-%s" "${SCRIPT}" "${OBJECT}" "${DATE_SLUG}" )"
+		
+			SRCDIR="${DATA}/${DATE}"
+			if [[ -d "${SRCDIR}" ]] ; then
+				SRCDIR=$( readlink --canonicalize "${SRCDIR}" )
+				SRCDIR=$( printf "%s/" "${SRCDIR}" )
+				printf "Source Directory: %s\n" "${SRCDIR}"
+
+				DESTDIR="${DESTINATION[$OBJECT]}/${DESTINATION[$OBJECT]}-${DATE_SLUG}"
+
+				if [[ -d "${DESTDIR}/data" ]] ; then
+					# This appears to already be a BagIt-formatted preservation package.
+					printf "Bagged.\n"
+					
+				elif [[ -d "${DESTDIR}" && -d "${DESTDIR}/uploads" && -z "${_PARAM[force]}" ]] ; then
+					# The directory exists, but it does not appear to be BagIt-formatted.
+					
+					printf "[${SCRIPT}:${CMD}] Preservation package %s already exists.\n\n" "${DESTDIR}" 1>&2
+					printf "To force an update of contents to the current state of this part of the repository, use:\n" 1>&2
+					printf "\t%s\n\n" "${_CMDLINE[*]} --force" 1>&2
+					
+				else
+					# The directory does not exist yet, or it does exist and we're forcing an update. Let's create it, and then deposit the data.
+					mkdir --verbose --parents "${DESTDIR}/database"
+					"${SCRIPT}" export database --to="${DESTDIR}/database" --replace
+					
+					mkdir --verbose --parents "${DESTDIR}/uploads"
+					rsync --archive --itemize-changes --copy-unsafe-links --hard-links --xattrs --delete "${SRCDIR}" "${DESTDIR}/uploads"
+
+					if [[ -z "${_PARAM[no-bag]}" ]] ; then
+						"${SCRIPT}" bag "${DESTDIR}"
+						EXITCODE=$?
+					fi
+				fi
+				
+			else
+				# The source directory does not seem to exist yet.
+				printf "[%s] The requested data source (repository='%s', section='%s') does not seem to exist.\n" "${SCRIPT} ${CMD}" "${OBJECT}" "${DATE}" 1>&2
+				EXITCODE=1
+			fi
+		else
+			# We cannot seem to identify the source directory.
+			printf "[%s] I do not know the correct location for the requested data source (repository='%s')\n" "${SCRIPT} ${CMD}" "${OBJECT}" 1>&2
+			EXITCODE=1
+			
+		fi
+		;;
+	
+	"preserve")
+# @method tskarx preserve
+# Preserve a prepared preservation package.
+#
+# Usage: tskarx preserve <PACKAGE>
+#
+# @version 2021.0213
+
+		echo "[${SCRIPT} ${CMD}] automated preservation is not yet implemented."
+		echo ""
+		echo "Here's what you do:"
+		echo ""
+		echo "Step 1. See if the data has been packaged. If not, package it up."
+		echo "Step 2. Bag the package."
+		echo "Step 3. Transmit a copy of the bagged package to the external data store."
+		;;
+		
+	*)
+		echo "[${SCRIPT}] '${CMD}' command not understood." 1>&2
+		echo "${__HELP__}" 1>&2
+		EXITCODE=255
+		;;
+esac
+
+
+##########################################################################################
+### CLEANUP: remove temporary files, clean up, exit. #####################################
+##########################################################################################
+
+exit ${EXITCODE}
